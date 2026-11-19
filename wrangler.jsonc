@@ -12,16 +12,15 @@
       "binding": "DB",
       "database_name": "goteo-mail",
       // Rellena con el id que devuelve `npx wrangler d1 create goteo-mail`
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "efc94173-f1c6-43bc-8247-54ea8f4060f2",
       "migrations_dir": "migrations"
     }
   ],
   "vars": {
     // Dirección pública del Worker (mejor un dominio propio que *.workers.dev:
     // los enlaces en dominios compartidos tienen mala reputación antispam).
-    "PUBLIC_URL": "http://localhost:8787",
-    "ALERT_EMAIL": ""
+    "PUBLIC_URL": "https://goteo-mail.cmoreno-837.workers.dev"
   }
-  // Secretos (npx wrangler secret put …): ADMIN_PASSWORD, ENC_KEY,
+  // Secretos (npx wrangler secret put …): ADMIN_PASSWORD, ENC_KEY, ALERT_EMAIL (opcional),
   // GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, MS_CLIENT_ID, MS_CLIENT_SECRET
 }
