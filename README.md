@@ -171,3 +171,31 @@ scripts/dev-node.mjs  servidor local de pruebas (simulado)
 ---
 
 © 2026 César Moreno. Todos los derechos reservados. Ver [LICENSE](LICENSE).
+
+---
+
+## Trasladar a otra cuenta
+
+### GitHub
+*Settings* del repo → *Danger Zone* → **Transfer ownership** → nueva cuenta u
+organización. Conserva el historial y GitHub redirige la URL antigua. Si el destino
+es una cuenta personal, esa cuenta tiene que aceptar la invitación por correo.
+Después, en la copia local: `git remote set-url origin https://github.com/NUEVA/goteo-mail.git`.
+
+### Cloudflare
+Los Workers no se pueden mover entre cuentas: se vuelve a desplegar en la nueva.
+
+1. `npx wrangler logout` y `npx wrangler login` con la cuenta nueva.
+2. **Copia de los datos** (solo si ya hay datos; con la cuenta ANTIGUA, antes del logout):
+   `npx wrangler d1 export goteo-mail --remote --output backup.sql`
+3. En la nueva: `npx wrangler d1 create goteo-mail` → copia el `database_id` en
+   `wrangler.jsonc`. Luego **o bien** `npm run db:remote` (base vacía) **o bien**
+   `npx wrangler d1 execute goteo-mail --remote --file backup.sql` (con los datos).
+4. `npm run deploy` → anota la URL nueva y ponla en `vars.PUBLIC_URL`; vuelve a desplegar.
+5. Secretos: `ADMIN_PASSWORD` y `ENC_KEY` (y los de Google/Microsoft si se usan).
+   Si `ENC_KEY` no es la misma que antes, hay que **volver a conectar los buzones**
+   (las contraseñas guardadas están cifradas con ella).
+6. Si se usa OAuth, cambia las URI de redirección en Google y Azure a la URL nueva.
+7. Los enlaces de baja y de seguimiento de correos ya enviados apuntan a la URL
+   antigua: deja el Worker viejo unas semanas y luego bórralo (`npx wrangler delete`).
+   Con un **dominio propio** este paso desaparece: se mueve el dominio y los enlaces siguen valiendo.
