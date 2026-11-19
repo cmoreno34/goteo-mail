@@ -44,6 +44,14 @@ export interface OutMessage {
   html: string;
   messageId: string;
   headers: Record<string, string>; // List-Unsubscribe, In-Reply-To, References…
+  inline?: InlineImage[]; // imágenes incrustadas (cid:)
+}
+
+export interface InlineImage {
+  cid: string;
+  mime: string;
+  b64: string;
+  name: string;
 }
 
 export function buildMime(m: OutMessage): string {
@@ -58,6 +66,30 @@ export function buildMime(m: OutMessage): string {
   ];
   for (const [k, v] of Object.entries(m.headers)) head.push(`${k}: ${v}`);
   head.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+
+  const htmlPart = ["Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: base64", "", wrap76(b64utf8(m.html))];
+  let htmlBlock: string[];
+  if (m.inline?.length) {
+    // multipart/related: el HTML y sus imágenes (cid:) van juntos
+    const rel = `r_${crypto.randomUUID().replace(/-/g, "")}`;
+    htmlBlock = [`Content-Type: multipart/related; boundary="${rel}"`, "", `--${rel}`, ...htmlPart];
+    for (const img of m.inline) {
+      const name = img.name.replace(/[^\w.-]/g, "_") || "imagen";
+      htmlBlock.push(
+        `--${rel}`,
+        `Content-Type: ${img.mime}; name="${name}"`,
+        "Content-Transfer-Encoding: base64",
+        `Content-ID: <${img.cid}>`,
+        `Content-Disposition: inline; filename="${name}"`,
+        "",
+        wrap76(img.b64),
+      );
+    }
+    htmlBlock.push(`--${rel}--`);
+  } else {
+    htmlBlock = htmlPart;
+  }
+
   return [
     head.join("\r\n"),
     "",
@@ -67,10 +99,7 @@ export function buildMime(m: OutMessage): string {
     "",
     wrap76(b64utf8(m.text)),
     `--${boundary}`,
-    "Content-Type: text/html; charset=UTF-8",
-    "Content-Transfer-Encoding: base64",
-    "",
-    wrap76(b64utf8(m.html)),
+    ...htmlBlock,
     `--${boundary}--`,
     "",
   ].join("\r\n");

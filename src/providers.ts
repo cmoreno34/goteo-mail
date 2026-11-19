@@ -2,8 +2,29 @@
 //  · smtp       → cualquier SMTP (Gmail con contraseña de aplicación, dominio propio…)
 //  · google     → Gmail API con OAuth (envía y detecta respuestas/rebotes)
 //  · microsoft  → Microsoft Graph con OAuth (Outlook.com y Microsoft 365)
-import { WorkerMailer } from "worker-mailer";
+import { Email, WorkerMailer } from "worker-mailer";
 import { buildMime, b64url, type OutMessage } from "./mime.ts";
+
+// worker-mailer monta su propio MIME y no sabe de imágenes incrustadas (cid:).
+// Para que el SMTP mande EXACTAMENTE el mismo mensaje que Gmail API y Graph,
+// se le pasa el MIME ya construido: su getEmailData devuelve el nuestro cuando
+// el correo lleva la marca X-Goteo-Raw (la marca no llega a salir).
+const RAW = new Map<string, string>();
+const proto = Email.prototype as unknown as {
+  __goteo?: boolean;
+  getEmailData: () => string;
+  applyDotStuffing: (s: string) => string;
+  headers: Record<string, string>;
+};
+if (!proto.__goteo) {
+  const orig = proto.getEmailData;
+  proto.getEmailData = function (this: typeof proto) {
+    const id = this.headers?.["X-Goteo-Raw"];
+    const raw = id ? RAW.get(id) : undefined;
+    return raw ? `${this.applyDotStuffing(raw)}\r\n.\r\n` : orig.call(this);
+  };
+  proto.__goteo = true;
+}
 import type { Env } from "./env.ts";
 
 export interface AccountRow {
@@ -81,6 +102,9 @@ export async function sendMessage(
   }
   if (acc.provider === "smtp") {
     const port = acc.smtp_port || 465;
+    const rawId = crypto.randomUUID();
+    RAW.set(rawId, buildMime(m));
+    try {
     await WorkerMailer.send(
       {
         host: acc.smtp_host || "smtp.gmail.com",
@@ -98,9 +122,12 @@ export async function sendMessage(
         subject: m.subject,
         text: m.text,
         html: m.html,
-        headers: { "Message-ID": m.messageId, ...m.headers },
+        headers: { "X-Goteo-Raw": rawId },
       },
     );
+    } finally {
+      RAW.delete(rawId);
+    }
     return { messageId: m.messageId };
   }
 

@@ -35,8 +35,8 @@ import {
   render,
   replaceUrls,
   textToHtml,
-  textWithUnsub,
 } from "./template.ts";
+import { compose, type ComposeCampaign } from "./compose.ts";
 
 const MAX_ACCOUNTS_PER_TICK = 3;
 const REPLY_CHECK_EVERY_MS = 30 * 60_000;
@@ -62,7 +62,7 @@ export async function loadAccount(env: Env, id: number): Promise<(AccountRow & R
   return { ...(a as unknown as AccountRow), ...a, secret: await decrypt(String(a.secret_enc), env.ENC_KEY) };
 }
 
-interface CampaignRow {
+interface CampaignRow extends ComposeCampaign {
   id: number;
   name: string;
   tz: string;
@@ -206,9 +206,7 @@ async function tickAccount(env: Env, accountId: number, now: number): Promise<{ 
     return { why: "contacto sin datos" };
   }
 
-  // Firma del buzón
   let body = r.body;
-  if (acc.signature) body = `${body.trimEnd()}\n\n${String(acc.signature)}`;
 
   // Enlaces de seguimiento
   const createdLinks: string[] = [];
@@ -237,6 +235,9 @@ async function tickAccount(env: Env, accountId: number, now: number): Promise<{ 
   const messageId = newMessageId(acc.email);
 
   try {
+    // Firma (texto + imagen), cabecera, fotos y botón: dentro del try, que
+    // una imagen rota no tumbe la pasada sin dejar rastro.
+    const msg = await compose(env, { body, account: acc, campaign: camp, unsubscribeUrl: unsub, mode: "cid" });
     const res = await sendMessage(
       env,
       acc,
@@ -245,8 +246,9 @@ async function tickAccount(env: Env, accountId: number, now: number): Promise<{ 
         fromEmail: acc.email,
         to: email,
         subject: r.subject,
-        text: textWithUnsub(body, unsub),
-        html: textToHtml(body, unsub),
+        text: msg.text,
+        html: msg.html,
+        inline: msg.inline,
         messageId,
         headers,
       },

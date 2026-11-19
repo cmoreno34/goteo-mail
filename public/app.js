@@ -40,6 +40,77 @@ const STATUS = { draft: "borrador", active: "activa", paused: "pausada", done: "
 const chip = (s) => `<span class="chip ${esc(s)}">${esc(STATUS[s] || s)}</span>`;
 const PROV = { smtp: "SMTP", google: "Gmail (OAuth)", microsoft: "Outlook / 365" };
 
+// ---------- Imágenes (firmas, cabeceras, fotos) ----------
+let IMAGES = [];
+async function loadImages() { IMAGES = (await api("GET", "/api/images")).images; return IMAGES; }
+
+// Lee el archivo y, si pesa más de 400 KB, lo reduce (1000 px de ancho, JPG):
+// el servidor no admite más, y un correo pesado puntúa peor en los filtros.
+async function fileToDataUri(file) {
+  const read = (f) => new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = ko; r.readAsDataURL(f); });
+  let uri = await read(file);
+  const okType = ["image/png", "image/jpeg", "image/gif"].includes(file.type);
+  if (okType && file.size <= 400 * 1024) return uri;
+  const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = uri; });
+  for (const [w, q] of [[1000, 0.85], [800, 0.8], [600, 0.75]]) {
+    const scale = Math.min(1, w / img.width);
+    const cv = document.createElement("canvas");
+    cv.width = Math.round(img.width * scale); cv.height = Math.round(img.height * scale);
+    const cx = cv.getContext("2d"); cx.fillStyle = "#fff"; cx.fillRect(0, 0, cv.width, cv.height);
+    cx.drawImage(img, 0, 0, cv.width, cv.height);
+    uri = cv.toDataURL("image/jpeg", q);
+    if (uri.length * 0.75 <= 400 * 1024) return uri;
+  }
+  return uri;
+}
+
+async function uploadImage(file) {
+  const r = await api("POST", "/api/images", { name: file.name, data_uri: await fileToDataUri(file) });
+  await loadImages();
+  return r.id;
+}
+
+function imgOptions(selected, none, extra = "") {
+  return `<option value="">${esc(none)}</option>` + extra + IMAGES.map((i) => `<option value="${i.id}" ${Number(selected) === i.id ? "selected" : ""}>${esc(i.name)} (${Math.round(i.bytes / 1024)} KB)</option>`).join("");
+}
+
+// Selector de imagen + subir + ancho + miniatura. Los campos llevan data-f / data-d
+// para que el formulario que lo contiene los recoja.
+function imgPicker({ label, field, widthField, selected, width, none, attr = "data-f", extraOptions = "" }) {
+  return `<div class="imgpick" data-imgpick>
+    <label>${esc(label)}<select ${attr}="${field}">${imgOptions(selected, none, extraOptions)}</select></label>
+    <div class="row" style="margin-top:6px">
+      <label class="fit">Ancho (px)<input type="number" min="80" max="640" ${attr}="${widthField}" value="${width}" style="width:90px"></label>
+      <label class="fit upload">Subir imagen<input type="file" accept="image/png,image/jpeg,image/gif" data-upload hidden></label>
+    </div>
+    <div data-thumb class="thumb"></div>
+  </div>`;
+}
+
+function wireImgPickers(root) {
+  root.querySelectorAll("[data-imgpick]").forEach((box) => {
+    const sel = $("select", box), thumb = $("[data-thumb]", box), wIn = $("input[type=number]", box);
+    const draw = () => {
+      const id = Number(sel.value);
+      thumb.innerHTML = id > 0 ? `<img src="/img/${id}" style="width:${Math.min(Number(wIn.value) || 420, 640)}px;max-width:100%">` : "";
+    };
+    sel.onchange = draw; wIn.oninput = draw; draw();
+    $("[data-upload]", box).onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      try {
+        const id = await uploadImage(f);
+        root.querySelectorAll("[data-imgpick] select").forEach((s) => {
+          const keep = s.value; const extra = [...s.options].filter((o) => o.value !== "" && !/^\d+$/.test(o.value)).map((o) => o.outerHTML).join("");
+          s.innerHTML = imgOptions(keep, s.options[0]?.textContent || "—", extra);
+          s.value = keep;
+        });
+        sel.value = String(id); draw(); toast("Imagen subida. Recuerda guardar.");
+      } catch (err) { toast(err.message, 8000); }
+      e.target.value = "";
+    };
+  });
+}
+
 // ---------- Login ----------
 function showLogin() { $("#login").classList.remove("hidden"); $("#app").classList.add("hidden"); }
 $("#loginForm").addEventListener("submit", async (e) => {
@@ -102,7 +173,7 @@ async function viewResumen() {
 
 // ---------- Buzones ----------
 async function viewBuzones() {
-  await refresh();
+  await Promise.all([refresh(), loadImages()]);
   main.innerHTML = `
     <div class="card"><h2>Conectar un buzón</h2>
       <div class="note">Gmail y Outlook con OAuth: el goteo además <b>detecta respuestas y rebotes</b> y deja de escribir a quien contesta. Con SMTP solo envía (las respuestas se marcan a mano).</div>
@@ -130,7 +201,8 @@ async function viewBuzones() {
       <div class="grid2">
         <label>Nombre del remitente<input data-f="from_name" value="${esc(a.from_name)}"></label>
         <label>Tope diario (máx. recomendado 40-50)<input data-f="daily_cap" type="number" min="1" max="500" value="${a.daily_cap}"></label>
-        <label style="grid-column:1/-1">Firma (texto, va al final de cada correo)<textarea data-f="signature" style="min-height:80px">${esc(a.signature)}</textarea></label>
+        <label style="grid-column:1/-1">Firma en texto (opcional, va al final de cada correo)<textarea data-f="signature" style="min-height:80px">${esc(a.signature)}</textarea></label>
+        <div style="grid-column:1/-1">${imgPicker({ label: "Firma con imagen (logo, foto, datos de contacto)", field: "signature_image_id", widthField: "signature_width", selected: a.signature_image_id, width: a.signature_width || 420, none: "Sin firma de imagen" })}</div>
         <label class="check"><input type="checkbox" data-f="warmup" ${a.warmup ? "checked" : ""}> Calentamiento (empieza en 8/día y sube 4 cada día de envío)</label>
         <label class="check"><input type="checkbox" data-f="active" ${a.active ? "checked" : ""}> Activo</label>
       </div>
@@ -148,6 +220,7 @@ async function viewBuzones() {
     try { await api("POST", "/api/accounts/smtp", f); toast("Buzón guardado. Manda una prueba antes de usarlo."); viewBuzones(); }
     catch (err) { toast(err.message); }
   };
+  wireImgPickers(main);
   main.querySelectorAll("[data-acc]").forEach((card) => {
     const id = card.dataset.acc;
     card.onclick = async (e) => {
@@ -286,7 +359,7 @@ Te escribo porque …
 {remitente}`;
 
 async function viewCampana(id) {
-  await refresh();
+  await Promise.all([refresh(), loadImages()]);
   const { campaign: c, steps, perStep } = await api("GET", `/api/campaigns/${id}`);
   const accIds = JSON.parse(c.account_ids || "[]");
   const days = c.days || "12345";
@@ -329,6 +402,16 @@ async function viewCampana(id) {
       </div>
     </div>
 
+    <div class="card"><h2>Diseño del correo</h2>
+      <div class="note">El enlace principal (<code>{enlace}</code>, o la primera URL del texto) sale como <b>botón</b> y no como dirección larga. Las imágenes van incrustadas en el correo (máx. 400 KB; si pesan más se reducen solas).</div>
+      <div class="grid2">
+        <label>Texto del botón (vacío = enlace normal)<input id="dBtn" maxlength="40" value="${esc(c.button_text ?? "Solicitar información")}"></label>
+        <label>Color del botón<input id="dBtnColor" type="color" value="${esc(c.button_color || "#1d4ed8")}" style="height:38px;padding:2px"></label>
+        <div>${imgPicker({ label: "Imagen de cabecera (arriba del correo)", field: "header_image_id", widthField: "header_width", selected: c.header_image_id, width: c.header_width || 560, none: "Sin cabecera", attr: "data-d" })}</div>
+        <div>${imgPicker({ label: "Firma con imagen", field: "signature_image_id", widthField: "signature_width", selected: c.signature_image_id, width: c.signature_width || 420, none: "Usar la firma de cada buzón", attr: "data-d", extraOptions: `<option value="none" ${c.signature_image_id === 0 ? "selected" : ""}>Sin firma de imagen</option>` })}</div>
+      </div>
+    </div>
+
     <div class="card"><h2>Secuencia</h2>
       <div class="note">Variantes con <code>{opción A|opción B}</code> (cada contacto recibe una, siempre la misma). Huecos: <code>{nombre}</code> (nombre de pila), <code>{nombre_completo}</code>, <code>{remitente}</code>, <code>{enlace}</code> y cualquier columna del CSV, p. ej. <code>{Cargo}</code>. Si un contacto no tiene el dato, se le salta. Los seguimientos solo salen si no ha contestado y van en el mismo hilo (asunto vacío = «Re: …»).</div>
       <div id="steps"></div>
@@ -358,6 +441,13 @@ async function viewCampana(id) {
         <span class="muted small fit">${sentBy[i + 1] ? `${sentBy[i + 1]} enviados` : ""}</span>
         ${i > 0 ? '<button class="fit small danger ghost" data-rm>Quitar</button>' : ""}</div>
       <input data-k="subject" placeholder="${i === 0 ? "Asunto (admite {variantes|distintas})" : "Asunto (vacío = responde en el mismo hilo)"}" value="${esc(s.subject)}">
+      <div class="toolbar">
+        <button type="button" class="small" data-fmt="bold" title="Negrita"><b>N</b></button>
+        ${Object.entries({ azul: "#1d4ed8", rojo: "#b91c1c", verde: "#15803d", naranja: "#c2410c", morado: "#6d28d9", gris: "#4b5563" }).map(([n, h]) => `<button type="button" class="small swatch" data-fmt="color" data-color="${n}" title="${n}" style="color:${h}">●</button>`).join("")}
+        <button type="button" class="small" data-fmt="link" title="Enlace con texto">Enlace</button>
+        <button type="button" class="small" data-fmt="button" title="Botón con el enlace principal">Botón</button>
+        <label class="small upload">Foto<input type="file" accept="image/png,image/jpeg,image/gif" data-photo hidden></label>
+      </div>
       <textarea data-k="body">${esc(s.body)}</textarea>
       <div><button class="small" data-prev>Vista previa</button></div>
     </div>`;
@@ -368,11 +458,49 @@ async function viewCampana(id) {
     $("#steps").querySelectorAll("[data-rm]").forEach((b) => b.onclick = () => { readSteps(); stepsData.splice(Number(b.closest(".step").dataset.i), 1); drawSteps(); });
     $("#steps").querySelectorAll("[data-prev]").forEach((b) => b.onclick = async () => {
       readSteps(); const i = Number(b.closest(".step").dataset.i);
-      const r = await api("POST", `/api/campaigns/${id}/preview`, { step: stepsData[i], ord: i + 1, main_link: $("#cLink").value, account_id: currentAccounts()[0] });
+      const r = await api("POST", `/api/campaigns/${id}/preview`, { step: stepsData[i], ord: i + 1, main_link: $("#cLink").value, account_id: currentAccounts()[0], design: design() });
       $("#preview").innerHTML = `<p class="small">Para <b>${esc(r.to)}</b> · ${r.variants} combinación(es) distintas${r.variants < 4 ? ' <span class="warn">— pocas; añade variantes {a|b} para que no salgan todos iguales</span>' : ""}</p>
         ${r.missing.length ? `<div class="alert warn">A este contacto le falta: ${r.missing.map((m) => `{${esc(m)}}`).join(", ")} → se le saltaría.</div>` : ""}
-        <div class="preview"><b>Asunto:</b> ${esc(r.subject)}\n\n${esc(r.text)}</div>`;
+        <div class="mailhead"><b>Asunto:</b> ${esc(r.subject)}</div>
+        <iframe class="mailframe" sandbox="allow-same-origin allow-popups" title="Vista previa"></iframe>
+        <details class="small"><summary>Versión de texto plano</summary><div class="preview">${esc(r.text)}</div></details>`;
+      const fr = $("#preview iframe");
+      fr.srcdoc = `<!doctype html><html><head><base target="_blank"><style>body{margin:16px;background:#fff}</style></head><body>${r.html}</body></html>`;
+      fr.onload = () => { fr.style.height = (fr.contentDocument.body.scrollHeight + 40) + "px"; };
     });
+  };
+  const wrapSel = (ta, before, after, placeholder = "texto") => {
+    const a = ta.selectionStart, b = ta.selectionEnd;
+    const sel = ta.value.slice(a, b) || placeholder;
+    ta.setRangeText(before + sel + after, a, b, "select");
+    ta.focus();
+  };
+  $("#steps").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-fmt]"); if (!btn) return;
+    const ta = $("textarea", btn.closest(".step"));
+    const f = btn.dataset.fmt;
+    if (f === "bold") wrapSel(ta, "**", "**");
+    else if (f === "color") wrapSel(ta, `[${btn.dataset.color}]`, `[/${btn.dataset.color}]`);
+    else if (f === "link") { const url = prompt("Dirección del enlace (https://…)"); if (url) wrapSel(ta, "[", `](${url.trim()})`, "texto del enlace"); }
+    else if (f === "button") { ta.setRangeText("\n\n{enlace}\n\n", ta.selectionStart, ta.selectionEnd, "end"); ta.focus(); }
+  });
+  $("#steps").addEventListener("change", async (e) => {
+    if (!e.target.matches("[data-photo]")) return;
+    const f = e.target.files[0]; if (!f) return;
+    const ta = $("textarea", e.target.closest(".step"));
+    try { const imgId = await uploadImage(f); ta.setRangeText(`\n[imagen:${imgId}]\n`, ta.selectionStart, ta.selectionEnd, "end"); ta.focus(); toast("Foto añadida al texto"); }
+    catch (err) { toast(err.message, 8000); }
+    e.target.value = "";
+  });
+  wireImgPickers(main);
+  const design = () => {
+    const g = (k) => main.querySelector(`[data-d="${k}"]`).value;
+    const sig = g("signature_image_id");
+    return {
+      button_text: $("#dBtn").value, button_color: $("#dBtnColor").value,
+      header_image_id: g("header_image_id") ? Number(g("header_image_id")) : null, header_width: Number(g("header_width")),
+      signature_image_id: sig === "none" ? 0 : sig ? Number(sig) : null, signature_width: Number(g("signature_width")),
+    };
   };
   drawSteps();
   $("#addStep").onclick = () => { readSteps(); stepsData.push({ delay_days: 4, subject: "", body: "{Hola|Buenas} de nuevo, {nombre}:\n\n…" }); drawSteps(); };
@@ -385,7 +513,7 @@ async function viewCampana(id) {
         name: $("#cName").value, account_ids: currentAccounts(), tz: $("#cTz").value,
         window_start: Number($("#cWs").value), window_end: Number($("#cWe").value),
         days: [...main.querySelectorAll("[data-day]")].filter((x) => x.checked).map((x) => x.dataset.day).join(""),
-        track_links: $("#cTrack").checked, main_link: $("#cLink").value, steps: stepsData,
+        track_links: $("#cTrack").checked, main_link: $("#cLink").value, steps: stepsData, ...design(),
       });
       $("#saveInfo").textContent = `Guardado · variantes por paso: ${r.variants.join(", ")}`;
       toast("Campaña guardada");

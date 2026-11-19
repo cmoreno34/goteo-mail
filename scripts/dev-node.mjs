@@ -16,7 +16,7 @@ register(
   "data:text/javascript," +
     encodeURIComponent(`
     export async function resolve(spec, ctx, next) {
-      if (spec === "cloudflare:sockets" || spec === "worker-mailer") return { url: "data:text/javascript,export class WorkerMailer{static async send(){throw new Error('SMTP real no disponible en Node: usa DRY_RUN')}}", shortCircuit: true };
+      if (spec === "cloudflare:sockets" || spec === "worker-mailer") return { url: "data:text/javascript,export class Email{getEmailData(){return ''}applyDotStuffing(s){return s}} export class WorkerMailer{static async send(){throw new Error('SMTP real no disponible en Node: usa DRY_RUN')}}", shortCircuit: true };
       return next(spec, ctx);
     }`),
 );
@@ -24,10 +24,14 @@ register(
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 mkdirSync(join(root, ".wrangler"), { recursive: true });
 const dbPath = join(root, ".wrangler", "dev-node.sqlite");
-const fresh = !existsSync(dbPath);
 const sqlite = new DatabaseSync(dbPath);
-if (fresh) {
-  for (const f of readdirSync(join(root, "migrations")).sort()) sqlite.exec(readFileSync(join(root, "migrations", f), "utf8"));
+// Aplica las migraciones que falten (como `wrangler d1 migrations apply`)
+sqlite.exec("CREATE TABLE IF NOT EXISTS _dev_migrations (name TEXT PRIMARY KEY)");
+const done = new Set(sqlite.prepare("SELECT name FROM _dev_migrations").all().map((r) => r.name));
+if (!done.size && sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='accounts'").get()) done.add("0001_init.sql");
+for (const f of readdirSync(join(root, "migrations")).sort()) {
+  if (!done.has(f)) sqlite.exec(readFileSync(join(root, "migrations", f), "utf8"));
+  sqlite.prepare("INSERT OR IGNORE INTO _dev_migrations VALUES (?)").run(f);
 }
 
 class Stmt {

@@ -129,6 +129,24 @@ comprueba que llega a la bandeja principal.
 4. **Activar goteo.** El panel muestra contactados, respuestas, clics, bajas,
    rebotes y apartados, y el motivo de cualquier parada.
 
+### Firmas, fotos y botones (como en el CRM)
+
+- **Firma con imagen** por buzón (*Buzones*): sube el PNG/JPG de la firma y elige el
+  ancho (420 px es tamaño firma). Puede llevar además una firma en texto.
+  Una campaña puede usar su propia firma o ninguna (*Diseño del correo*).
+- **Imagen de cabecera** por campaña, arriba del correo.
+- **Fotos dentro del texto**: botón *Foto* del editor → inserta `[imagen:N]`.
+- **Botón**: el enlace principal (`{enlace}`, o la primera URL del texto) sale como
+  un botón («Solicitar información», texto y color configurables), no como una
+  dirección larga. Botón *a prueba de Outlook* (tabla con `bgcolor`).
+- **Formato**: `**negrita**`, `[azul]texto[/azul]` (rojo, azul, verde, naranja,
+  morado, gris) y `[texto](https://…)` para enlazar un texto. Lo insertan los
+  botones del editor.
+
+Las imágenes van **incrustadas** (`cid:`), no enlazadas: una imagen remota la
+bloquean muchos clientes y un `data:` lo borran Gmail y Outlook. Máximo 400 KB
+cada una (el panel reduce solo las que pesan más).
+
 Huecos disponibles: `{nombre}` (nombre de pila), `{nombre_completo}`, `{email}`,
 `{remitente}`, `{enlace}` y cualquier columna del CSV (sin distinguir mayúsculas ni tildes).
 
@@ -140,9 +158,11 @@ Huecos disponibles: `{nombre}` (nombre de pila), `{nombre_completo}`, `{email}`,
 src/index.ts      rutas: panel (/api), clics (/l/…), bajas (/u/…), OAuth
 src/drip.ts       el goteo (cron): elige, envía, frena, avisa, lee respuestas
 src/pacing.ts     ritmo: ventana, huecos, calentamiento, freno, errores legibles
-src/template.ts   spintax, huecos, validación de emails, texto → HTML
+src/template.ts   spintax, huecos, validación de emails
+src/html.ts       texto del editor → HTML: botón, negrita, colores, fotos, firma
+src/compose.ts    monta el correo final con sus imágenes incrustadas
 src/providers.ts  SMTP (worker-mailer), Gmail API, Microsoft Graph
-src/mime.ts       mensaje MIME (cabeceras de baja e hilo)
+src/mime.ts       mensaje MIME (cabeceras de baja e hilo, imágenes cid:)
 migrations/       esquema D1
 public/           panel (HTML + JS sin dependencias)
 scripts/dev-node.mjs  servidor local de pruebas (simulado)

@@ -3,7 +3,12 @@ import { encrypt, randomToken, sign, verify } from "./crypto.ts";
 import { loadAccount, logEvent, markContact, runTick } from "./drip.ts";
 import { newMessageId } from "./mime.ts";
 import { oauthConfig, sendMessage, whoAmI } from "./providers.ts";
-import { cleanEmail, escapeHtml, render, spintaxVariants, textToHtml, textWithUnsub } from "./template.ts";
+import { cleanEmail, escapeHtml, render, spintaxVariants } from "./template.ts";
+import { compose, type ComposeCampaign } from "./compose.ts";
+
+// Imágenes: solo formatos que ven todos los clientes de correo (Outlook no ve WebP).
+const IMG_TYPES = ["image/png", "image/jpeg", "image/gif"];
+const IMG_MAX_BYTES = 400 * 1024;
 
 type Handler = (req: Request, env: Env, p: Record<string, string>, url: URL) => Promise<Response>;
 
@@ -157,7 +162,7 @@ route("GET", "/api/overview", async (_req, env) => {
   const now = Date.now();
   const accounts = (
     await env.DB.prepare(
-      `SELECT a.id, a.provider, a.email, a.from_name, a.signature, a.smtp_host, a.smtp_port, a.daily_cap, a.warmup,
+      `SELECT a.id, a.provider, a.email, a.from_name, a.signature, a.signature_image_id, a.signature_width, a.smtp_host, a.smtp_port, a.daily_cap, a.warmup,
          a.active, a.next_at, a.fail_streak, a.last_error,
          (SELECT COUNT(*) FROM sends s WHERE s.account_id = a.id AND s.sent_at > ?) AS sent_24h,
          (SELECT COUNT(*) FROM sends s WHERE s.account_id = a.id) AS sent_total
@@ -230,7 +235,9 @@ route("POST", "/api/accounts/smtp", async (req, env) => {
 
 route("PATCH", "/api/accounts/:id", async (req, env, p) => {
   const b = (await req.json()) as Record<string, unknown>;
-  const allowed = ["from_name", "signature", "daily_cap", "warmup", "active"];
+  const allowed = ["from_name", "signature", "daily_cap", "warmup", "active", "signature_image_id", "signature_width"];
+  if ("signature_image_id" in b && (b.signature_image_id === "" || b.signature_image_id === undefined)) b.signature_image_id = null;
+  if ("signature_width" in b) b.signature_width = Math.max(80, Math.min(640, Number(b.signature_width) || 420));
   const sets: string[] = [];
   const vals: unknown[] = [];
   for (const k of allowed) {
@@ -256,15 +263,17 @@ route("POST", "/api/accounts/:id/test", async (req, env, p) => {
   if (!dest) return bad("Dirección de prueba no válida");
   const acc = await loadAccount(env, Number(p.id));
   if (!acc) return bad("No existe", 404);
-  const text = `Correo de prueba desde Goteo Mail.\n\nSi lo lees en la bandeja de entrada (y no en spam), el buzón ${acc.email} está listo.`;
+  const body = `Correo de prueba desde Goteo Mail.\n\nSi lo lees en la bandeja de entrada (y no en spam), el buzón ${acc.email} está listo. Abajo debería verse tu firma.`;
   try {
+    const msg = await compose(env, { body, account: acc, campaign: null, unsubscribeUrl: "", mode: "cid" });
     await sendMessage(env, acc, {
       fromName: String(acc.from_name || ""),
       fromEmail: acc.email,
       to: dest,
       subject: "Prueba de Goteo Mail",
-      text,
-      html: textToHtml(text, ""),
+      text: msg.text,
+      html: msg.html,
+      inline: msg.inline,
       messageId: newMessageId(acc.email),
       headers: {},
     });
@@ -395,8 +404,16 @@ route("PUT", "/api/campaigns/:id", async (req, env, p) => {
     days: string;
     track_links: boolean;
     main_link: string;
+    button_text?: string;
+    button_color?: string;
+    header_image_id?: number | null;
+    header_width?: number;
+    signature_image_id?: number | null;
+    signature_width?: number | null;
     steps: { delay_days: number; subject: string; body: string }[];
   };
+  const optId = (v: unknown) => (v === null || v === undefined || v === "" ? null : Number(v));
+  const color = /^#[0-9a-f]{6}$/i.test(b.button_color || "") ? b.button_color : "#1d4ed8";
   if (!b.steps?.length) return bad("Hace falta al menos un paso");
   if (!b.steps[0].subject.trim()) return bad("El primer correo necesita asunto");
   const ws = Math.max(0, Math.min(23, Number(b.window_start)));
@@ -408,7 +425,8 @@ route("PUT", "/api/campaigns/:id", async (req, env, p) => {
   }
   const stmts = [
     env.DB.prepare(
-      `UPDATE campaigns SET name=?, account_ids=?, tz=?, window_start=?, window_end=?, days=?, track_links=?, main_link=? WHERE id=?`,
+      `UPDATE campaigns SET name=?, account_ids=?, tz=?, window_start=?, window_end=?, days=?, track_links=?, main_link=?,
+         button_text=?, button_color=?, header_image_id=?, header_width=?, signature_image_id=?, signature_width=? WHERE id=?`,
     ).bind(
       b.name.trim() || "Campaña",
       JSON.stringify((b.account_ids || []).map(Number)),
@@ -418,6 +436,12 @@ route("PUT", "/api/campaigns/:id", async (req, env, p) => {
       (b.days || "12345").replace(/[^1-7]/g, "") || "12345",
       b.track_links ? 1 : 0,
       (b.main_link || "").trim(),
+      (b.button_text ?? "Solicitar información").slice(0, 40),
+      color,
+      optId(b.header_image_id),
+      Math.max(80, Math.min(640, Number(b.header_width) || 560)),
+      optId(b.signature_image_id),
+      b.signature_width ? Math.max(80, Math.min(640, Number(b.signature_width))) : null,
       id,
     ),
     env.DB.prepare("DELETE FROM steps WHERE campaign_id = ?").bind(id),
@@ -545,7 +569,14 @@ route("POST", "/api/campaigns/:id/enrollments/:eid/retry", async (_req, env, p) 
 });
 
 route("POST", "/api/campaigns/:id/preview", async (req, env, p) => {
-  const b = (await req.json()) as { step: { subject: string; body: string }; ord: number; contact_id?: number; main_link?: string; account_id?: number };
+  const b = (await req.json()) as {
+    step: { subject: string; body: string };
+    ord: number;
+    contact_id?: number;
+    main_link?: string;
+    account_id?: number;
+    design?: ComposeCampaign;
+  };
   const contact = b.contact_id
     ? await env.DB.prepare("SELECT * FROM contacts WHERE id = ?").bind(b.contact_id).first<Record<string, string>>()
     : await env.DB.prepare(
@@ -554,25 +585,66 @@ route("POST", "/api/campaigns/:id/preview", async (req, env, p) => {
         .bind(Number(p.id))
         .first<Record<string, string>>();
   const acc = b.account_id
-    ? await env.DB.prepare("SELECT from_name, signature FROM accounts WHERE id = ?").bind(b.account_id).first<{ from_name: string; signature: string }>()
+    ? await env.DB.prepare("SELECT from_name, signature, signature_image_id, signature_width FROM accounts WHERE id = ?")
+        .bind(b.account_id)
+        .first<Record<string, unknown>>()
     : null;
   const ct = contact
     ? { email: contact.email, name: contact.name, fields: JSON.parse(contact.fields || "{}") }
     : { email: "ejemplo@dominio.com", name: "Nombre Ejemplo", fields: {} };
   const subj = b.ord > 1 && !b.step.subject.trim() ? "Re: (asunto del primer correo)" : b.step.subject;
-  const r = render(subj, b.step.body, { contact: ct, senderName: acc?.from_name || "", enlace: b.main_link || "" }, `${ct.email}:${p.id}:${b.ord}`);
-  let body = r.body;
-  if (acc?.signature) body = `${body.trimEnd()}\n\n${acc.signature}`;
+  const r = render(subj, b.step.body, { contact: ct, senderName: String(acc?.from_name || ""), enlace: b.main_link || "" }, `${ct.email}:${p.id}:${b.ord}`);
+  const msg = await compose(env, {
+    body: r.body,
+    account: acc,
+    campaign: b.design || null,
+    unsubscribeUrl: `${env.PUBLIC_URL}/u/ejemplo`,
+    mode: "url",
+  });
   return json({
     to: ct.email,
     subject: r.subject,
-    text: textWithUnsub(body, `${env.PUBLIC_URL}/u/…`),
+    text: msg.text,
+    html: msg.html,
     missing: r.missing,
     variants: spintaxVariants(b.step.subject) * spintaxVariants(b.step.body),
   });
 });
 
 route("POST", "/api/tick", async (_req, env) => json(await runTick(env)));
+
+// --- Imágenes (firmas, cabeceras, fotos)
+route("GET", "/api/images", async (_req, env) => {
+  const res = await env.DB.prepare("SELECT id, name, mime, bytes, created_at FROM images ORDER BY id DESC").all();
+  return json({ images: res.results });
+});
+
+route("POST", "/api/images", async (req, env) => {
+  const b = (await req.json()) as { name?: string; data_uri?: string };
+  const m = (b.data_uri || "").match(/^data:([^;,]+);base64,(.+)$/);
+  if (!m) return bad("Imagen no válida");
+  const mime = m[1].toLowerCase();
+  if (!IMG_TYPES.includes(mime)) return bad("Usa PNG, JPG o GIF (Outlook no muestra WebP)");
+  const bytes = Math.floor((m[2].length * 3) / 4) - (m[2].endsWith("==") ? 2 : m[2].endsWith("=") ? 1 : 0);
+  if (bytes > IMG_MAX_BYTES) {
+    return bad(`La imagen pesa ${Math.round(bytes / 1024)} KB; el máximo es 400 KB. Redúcela (una firma ronda 50-150 KB): los correos pesados puntúan peor en los filtros.`);
+  }
+  const r = await env.DB.prepare("INSERT INTO images (name, mime, data_b64, bytes, created_at) VALUES (?,?,?,?,?) RETURNING id")
+    .bind((b.name || "imagen").slice(0, 120), mime, m[2], bytes, Date.now())
+    .first<{ id: number }>();
+  return json({ id: r!.id });
+});
+
+route("DELETE", "/api/images/:id", async (_req, env, p) => {
+  const id = Number(p.id);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE accounts SET signature_image_id = NULL WHERE signature_image_id = ?").bind(id),
+    env.DB.prepare("UPDATE campaigns SET header_image_id = NULL WHERE header_image_id = ?").bind(id),
+    env.DB.prepare("UPDATE campaigns SET signature_image_id = NULL WHERE signature_image_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM images WHERE id = ?").bind(id),
+  ]);
+  return json({ ok: true });
+});
 
 // ---------- Router ----------
 function match(pattern: string, path: string): Record<string, string> | null {
@@ -595,6 +667,12 @@ export default {
 
     if ((p = match("/l/:code", path))) return trackLink(req, env, p, url);
     if ((p = match("/u/:token", path))) return unsubPage(req, env, p, url);
+    if ((p = match("/img/:id", path))) {
+      const img = await env.DB.prepare("SELECT mime, data_b64 FROM images WHERE id = ?").bind(Number(p.id)).first<{ mime: string; data_b64: string }>();
+      if (!img) return new Response("No encontrada", { status: 404 });
+      const bin = Uint8Array.from(atob(img.data_b64), (c) => c.charCodeAt(0));
+      return new Response(bin, { headers: { "content-type": img.mime, "cache-control": "public, max-age=86400" } });
+    }
     if ((p = match("/oauth/:provider/callback", path)) && ["google", "microsoft"].includes(p.provider)) {
       return oauthCallback(req, env, p, url);
     }
