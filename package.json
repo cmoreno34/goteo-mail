@@ -1,0 +1,24 @@
+{
+  "name": "goteo-mail",
+  "version": "0.1.0",
+  "description": "Goteo de email a ritmo humano (Cloudflare Workers + D1)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:local": "wrangler d1 migrations apply goteo-mail --local",
+    "db:remote": "wrangler d1 migrations apply goteo-mail --remote",
+    "deploy": "wrangler deploy",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p ."
+  },
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "worker-mailer": "^1.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261119.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.165.0"
+  },
+  "private": true
+}
