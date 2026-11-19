@@ -142,9 +142,22 @@ async function viewResumen() {
   const alerts = [];
   for (const a of OV.accounts) if (a.last_error) alerts.push(`<div class="alert"><b>${esc(a.email)}</b> · ${a.fail_streak} fallos seguidos · ${esc(a.last_error)}</div>`);
   for (const c of OV.campaigns) if (c.stopped_reason && c.status === "paused") alerts.push(`<div class="alert warn"><b>${esc(c.name)}</b> está pausada: ${esc(c.stopped_reason)}</div>`);
-  if (!OV.accounts.length) alerts.push(`<div class="note">Empieza conectando un buzón en <a href="#buzones">Buzones</a>.</div>`);
   const ct = OV.contacts || {};
   const active = OV.campaigns.filter((c) => c.status === "active");
+  // Primeros pasos: hasta que haya una campaña activa, qué falta y dónde se hace.
+  if (!active.length) {
+    const firstCamp = OV.campaigns[0];
+    const pasos = [
+      [OV.accounts.length > 0, "Conectar un buzón y mandar una prueba", "#buzones", "Ir a Buzones"],
+      [(ct.total || 0) > 0, "Importar los contactos (CSV de Notion)", "#contactos", "Ir a Contactos"],
+      [OV.campaigns.length > 0, "Crear una campaña: buzón, horario, textos y diseño", "#campanas", "Crear campaña"],
+      [OV.campaigns.some((c) => c.total > 0), "Añadir contactos a la campaña (abajo, en la propia campaña)", firstCamp ? `#campanas/${firstCamp.id}` : "#campanas", "Abrir campaña"],
+      [false, "Pulsar «Activar goteo» (arriba a la derecha, dentro de la campaña)", firstCamp ? `#campanas/${firstCamp.id}` : "#campanas", "Abrir campaña"],
+    ];
+    const next = pasos.findIndex((p) => !p[0]);
+    alerts.unshift(`<div class="card"><h2>Primeros pasos</h2><ol class="steps">${pasos.map(([ok, txt, href, cta], i) => `
+      <li class="${ok ? "ok" : i === next ? "now" : ""}"><span>${ok ? "✓ " : ""}${esc(txt)}</span>${i === next ? `<a class="btnlink" href="${href}">${esc(cta)} →</a>` : ""}</li>`).join("")}</ol></div>`);
+  }
   main.innerHTML = `
     ${alerts.join("")}
     <div class="card"><h2>Hoy</h2><div class="stats">
